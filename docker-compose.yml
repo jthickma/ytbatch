@@ -2,10 +2,10 @@ services:
   ytbatch-web:
     build:
       context: ./web
-    container_name: ytbatch-web
     restart: unless-stopped
-    ports:
-      - "8899:5000"
+    # Remove container_name and ports for Easypanel
+    expose:
+      - "5000"
     volumes:
       - ./data/input:/input
       - ./data/downloads:/downloads
@@ -13,17 +13,14 @@ services:
     environment:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
-    # Remove depends_on here
-    # depends_on:
-    #   - ytbatch-worker
     networks:
       - ytbatch-network
 
   ytbatch-worker:
     build:
       context: ./worker
-    container_name: ytbatch-worker
     restart: unless-stopped
+    # No container_name
     volumes:
       - ./data/input:/input
       - ./data/downloads:/downloads
@@ -33,7 +30,7 @@ services:
       - MAX_CONCURRENT_DOWNLOADS=3
       - PYTHONUNBUFFERED=1
     depends_on:
-      - ytbatch-web # Keep depends_on here
+      - ytbatch-web
     networks:
       - ytbatch-network
 

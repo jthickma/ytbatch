@@ -3,7 +3,6 @@ services:
     build:
       context: ./web
     restart: unless-stopped
-    # Remove container_name and ports for Easypanel
     expose:
       - "5000"
     volumes:
@@ -14,13 +13,13 @@ services:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
     networks:
+      - easypanel-ttdl
       - ytbatch-network
 
   ytbatch-worker:
     build:
       context: ./worker
     restart: unless-stopped
-    # No container_name
     volumes:
       - ./data/input:/input
       - ./data/downloads:/downloads
@@ -29,11 +28,12 @@ services:
       - YTBATCH_POLL_INTERVAL=2
       - MAX_CONCURRENT_DOWNLOADS=3
       - PYTHONUNBUFFERED=1
-    depends_on:
-      - ytbatch-web
     networks:
+      - easypanel-ttdl
       - ytbatch-network
 
 networks:
   ytbatch-network:
     driver: bridge
+  easypanel-ttdl:
+    external: true

@@ -10,7 +10,6 @@ def init_db():
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        # Jobs Table
         c.execute('''CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -21,11 +20,7 @@ def init_db():
             progress_text TEXT,
             error TEXT
         )''')
-        # Config Table (Singleton pattern)
-        c.execute('''CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)''')
         conn.commit()
         conn.close()
 
@@ -54,8 +49,7 @@ def save_config(config_dict):
     with db_lock:
         conn = get_db_connection()
         for k, v in config_dict.items():
-            conn.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', 
-                         (k, json.dumps(v)))
+            conn.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', (k, json.dumps(v)))
         conn.commit()
         conn.close()
 
@@ -70,15 +64,10 @@ def create_job(job_id, name, urls):
         conn.close()
 
 def update_job(job_id, data):
-    """
-    Dynamically updates fields provided in the 'data' dict.
-    """
     if not data: return
-    
     set_clause = ', '.join([f"{k} = ?" for k in data.keys()])
     values = list(data.values())
     values.append(job_id)
-    
     with db_lock:
         conn = get_db_connection()
         conn.execute(f'UPDATE jobs SET {set_clause} WHERE id = ?', values)
@@ -87,7 +76,8 @@ def update_job(job_id, data):
 
 def get_jobs():
     conn = get_db_connection()
-    jobs = conn.execute('SELECT * FROM jobs ORDER BY created_at DESC').fetchall()
+    # Performance: Only fetch last 50 jobs to keep UI snappy
+    jobs = conn.execute('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50').fetchall()
     conn.close()
     return [dict(row) for row in jobs]
 
@@ -101,5 +91,7 @@ def delete_job(job_id):
     with db_lock:
         conn = get_db_connection()
         conn.execute('DELETE FROM jobs WHERE id = ?', (job_id,))
+        # Run vacuum to reclaim space periodically
+        conn.execute('VACUUM') 
         conn.commit()
         conn.close()

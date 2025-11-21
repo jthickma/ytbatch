@@ -1,8 +1,0 @@
-{
-  "max_concurrent_downloads": 3,
-  "download_quality": "best",
-  "enable_audio_extraction": false,
-  "auto_cleanup_completed": false,
-  "notification_enabled": true,
-  "theme": "dark"
-}

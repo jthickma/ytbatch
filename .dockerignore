@@ -1,5 +1,3 @@
-data/downloads
-data/input
 __pycache__
 *.pyc
 *.pyo
@@ -7,3 +5,7 @@ __pycache__
 .Python
 env/
 venv/
+.git
+.gitignore
+data/
+logs/

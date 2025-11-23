@@ -1,17 +1,16 @@
 services:
   ytbatch:
     build: .
-    container_name: ytbatch_pro
+    container_name: ytbatch_ephemeral
+    # 'unless-stopped' will restart the container if it crashes, 
+    # preserving data until the container is explicitly removed.
     restart: unless-stopped
     ports:
       - "8899:8899"
-    volumes:
-      # Persist the database and downloaded files to your local machine
-      - ./data:/app/data
     environment:
-      - SECRET_KEY=change_this_to_a_secure_random_string
+      - SECRET_KEY=dev-secret-change-me
       - PORT=8899
-    # Optional: specific healthcheck to ensure app is responsive
+    # Optional healthcheck
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8899/api/status"]
       interval: 30s

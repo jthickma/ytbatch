@@ -8,7 +8,7 @@ services:
     ports:
       - "8899:8899"
     environment:
-      - SECRET_KEY=dev-secret-change-me
+      - SECRET_KEY=change_me_to_a_secure_key 
       - PORT=8899
     # Optional healthcheck
     healthcheck:

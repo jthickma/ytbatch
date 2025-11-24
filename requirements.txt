@@ -2,4 +2,5 @@ flask
 flask-socketio
 eventlet
 yt-dlp
+gallery-dl
 gunicorn

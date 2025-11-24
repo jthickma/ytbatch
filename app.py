@@ -2,242 +2,265 @@ import os
 import time
 import uuid
 import logging
-import queue
+import shutil
 import zipfile
 import tempfile
-import shutil
-import glob
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from flask import Flask, request, jsonify, send_file, render_template, Response
+from flask import Flask, request, jsonify, send_file, render_template, after_this_request
 from flask_socketio import SocketIO
 import yt_dlp
+import gallery_dl
 
-import db
-
-# --- Configuration & Setup ---
+# --- Configuration ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
-ARCHIVE_FILE = os.path.join(DATA_DIR, "archive.txt")
+TEMP_DIR = os.environ.get('TEMP_DIR', os.path.join(BASE_DIR, "temp_data"))
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 4))
+SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# Ensure temp dir exists
+if os.path.exists(TEMP_DIR):
+    shutil.rmtree(TEMP_DIR)
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-db.init_db()
-
+# --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+try:
+    logger.info(f"Loaded gallery-dl version: {gallery_dl.__version__}")
+except AttributeError:
+    logger.info("Loaded gallery-dl (version unknown)")
 
+# --- App Setup ---
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-fallback-change-me')
+app.config['SECRET_KEY'] = SECRET_KEY
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# --- Utilities ---
-
-def get_disk_usage():
-    """Returns free space in GB."""
-    total, used, free = shutil.disk_usage(DOWNLOAD_DIR)
-    return {
-        "total": f"{total // (2**30)} GB",
-        "free": f"{free // (2**30)} GB",
-        "percent": round((used / total) * 100, 1)
-    }
+# --- In-Memory State ---
+JOBS = {}
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 # --- Worker Logic ---
 
-def process_download_task(job_data, urls):
-    job_id = job_data['id']
-    logger.info(f"Starting execution for Job {job_id}")
+def run_gallery_dl(url, output_dir):
+    """
+    Runs gallery-dl via subprocess.
     
-    db.update_job(job_id, {"status": "running", "progress_text": "Initializing..."})
-    socketio.emit('job_update', db.get_job(job_id))
+    NOTE: We use subprocess instead of the Python API because gallery-dl's 
+    configuration system is global and not thread-safe. Running it in a 
+    separate process ensures that concurrent downloads do not interfere 
+    with each other's configuration (e.g. destination directory).
+    """
+    try:
+        # gallery-dl downloads to current directory by default or specified via config/args
+        # We use -d to specify destination
+        cmd = [
+            "gallery-dl",
+            "--directory", output_dir,
+            "--no-mtime", # Use current time or preserve? User wanted metadata. 
+            # gallery-dl usually preserves mtime by default or has options. 
+            # Let's stick to defaults but ensure destination.
+            url
+        ]
+        
+        logger.info(f"Attempting gallery-dl for {url}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            return True, "Downloaded with gallery-dl"
+        else:
+            return False, f"gallery-dl failed: {result.stderr}"
+            
+    except Exception as e:
+        return False, str(e)
 
-    config = db.get_config()
+def process_job(job_id, urls, options=None):
+    job_dir = os.path.join(TEMP_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
     
-    # Enhanced yt-dlp Configuration
-    ydl_opts = {
-        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(uploader)s', '%(upload_date)s_%(title)s [%(id)s].%(ext)s'),
-        'download_archive': ARCHIVE_FILE,
-        'ignoreerrors': True,
-        'quiet': True,
-        'no_warnings': True,
-        # KEY IMPROVEMENT: Force file metadata to match upload date
-        'updatetime': True, 
-        'writethumbnail': True,
-        'addmetadata': True,
-        # Anti-blocking: Spoof a modern browser
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'logger': logger,
-        'progress_hooks': [lambda d: socketio.emit('file_progress', {
-            'job_id': job_id,
-            'filename': os.path.basename(d.get('filename', 'unknown')),
-            'percent': d.get('_percent_str', '0%').replace('%',''),
-            'speed': d.get('_speed_str', 'N/A'),
-            'eta': d.get('_eta_str', 'N/A')
-        }) if d['status'] == 'downloading' else None],
-    }
+    options = options or {}
+    force_gallery = options.get('force_gallery', False)
 
-    if config['extract_audio']:
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}],
-        })
-    else:
-        ydl_opts['format'] = config.get('video_quality', 'best')
+    JOBS[job_id]['status'] = 'running'
+    JOBS[job_id]['progress_text'] = 'Starting downloads...'
+    socketio.emit('job_update', JOBS[job_id])
 
     completed = 0
     failed = 0
     total = len(urls)
+    
+    # yt-dlp options
+    ydl_opts = {
+        'outtmpl': os.path.join(job_dir, '%(title)s [%(id)s].%(ext)s'),
+        'ignoreerrors': True, # We handle errors manually to try fallback
+        'quiet': True,
+        'no_warnings': True,
+        'writethumbnail': True,
+        'addmetadata': True,
+        'updatetime': True, # Preserve upload date
+        # 'logger': logger, # Custom logger might be too verbose, we'll log manually
+    }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            for index, url in enumerate(urls):
-                if db.get_job(job_id)['status'] == 'cancelled':
-                    logger.info(f"Job {job_id} cancelled.")
-                    return
+    for index, url in enumerate(urls):
+        if JOBS[job_id].get('status') == 'cancelled':
+            break
 
-                db.update_job(job_id, {
-                    "progress_text": f"Processing {index + 1}/{total}",
-                    "progress": int((index / total) * 100)
-                })
-                socketio.emit('job_update', db.get_job(job_id))
+        JOBS[job_id]['progress'] = int((index / total) * 100)
+        JOBS[job_id]['progress_text'] = f"Processing {index + 1}/{total}: {url}"
+        socketio.emit('job_update', JOBS[job_id])
 
-                try:
-                    # Use extract_info to ensure we get metadata for post-processing logic if needed
-                    info = ydl.extract_info(url, download=True)
-                    if info:
-                        completed += 1
-                except Exception as e:
-                    logger.error(f"Error downloading {url}: {e}")
-                    failed += 1
+        success = False
+        error_msg = ""
 
-        final_status = "completed" if failed == 0 else "completed_with_errors"
-        db.update_job(job_id, {"status": final_status, "progress": 100, "progress_text": f"Done: {completed} ok, {failed} error"})
-        socketio.emit('job_update', db.get_job(job_id))
+        # Determine strategy
+        use_gallery_dl = force_gallery
+        
+        if not use_gallery_dl:
+            # 1. Try yt-dlp
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    # extract_info with download=True throws exception on error if ignoreerrors=False
+                    # But we set ignoreerrors=True, so it might return None or partial info.
+                    # To detect failure for fallback, we might want ignoreerrors=False for the call, 
+                    # or check the result.
+                    
+                    # Let's use a separate options dict for the check or just try/except with default opts
+                    # Actually, if we want fallback, we should let it raise exception.
+                    opts_strict = ydl_opts.copy()
+                    opts_strict['ignoreerrors'] = False
+                    
+                    with yt_dlp.YoutubeDL(opts_strict) as ydl_strict:
+                        ydl_strict.extract_info(url, download=True)
+                    
+                    success = True
+                    logger.info(f"yt-dlp success for {url}")
 
-    except Exception as e:
-        logger.error(f"Critical failure in job {job_id}: {e}")
-        db.update_job(job_id, {"status": "failed", "error": str(e)})
-        socketio.emit('job_update', db.get_job(job_id))
+            except Exception as e_yt:
+                logger.warning(f"yt-dlp failed for {url}: {e_yt}. Trying gallery-dl...")
+                use_gallery_dl = True
+                error_msg = f"yt-dlp error: {str(e_yt)}"
 
-class WorkerManager:
-    def __init__(self):
-        self.executor = None
-        self.reload_workers()
+        if use_gallery_dl:
+            # 2. Fallback or Force gallery-dl
+            g_success, g_msg = run_gallery_dl(url, job_dir)
+            if g_success:
+                success = True
+                logger.info(f"gallery-dl success for {url}")
+            else:
+                error_msg += f"; gallery-dl error: {g_msg}"
+                logger.error(f"All downloads failed for {url}. {error_msg}")
 
-    def reload_workers(self):
-        config = db.get_config()
-        max_workers = int(config.get('max_concurrent_downloads', 3))
-        if self.executor: self.executor.shutdown(wait=False)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        if success:
+            completed += 1
+        else:
+            failed += 1
+            JOBS[job_id]['errors'].append({'url': url, 'error': error_msg})
 
-    def submit_job(self, job_id, urls):
-        job = db.get_job(job_id)
-        if job: self.executor.submit(process_download_task, job, urls)
+    # Create Zip
+    JOBS[job_id]['progress_text'] = "Zipping files..."
+    socketio.emit('job_update', JOBS[job_id])
+    
+    zip_path = os.path.join(TEMP_DIR, f"{job_id}.zip")
+    has_files = False
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(job_dir):
+            for file in files:
+                has_files = True
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, job_dir)
+                zf.write(abs_path, rel_path)
+    
+    # Cleanup raw files immediately to save space? 
+    # Or keep them until zip is downloaded? 
+    # Let's keep zip, remove raw files.
+    shutil.rmtree(job_dir)
 
-manager = WorkerManager()
+    if not has_files:
+        JOBS[job_id]['status'] = 'failed'
+        JOBS[job_id]['error'] = "No files were downloaded."
+    else:
+        JOBS[job_id]['status'] = 'completed'
+        JOBS[job_id]['zip_path'] = zip_path
+        JOBS[job_id]['progress'] = 100
+        JOBS[job_id]['progress_text'] = f"Done. {completed} succeeded, {failed} failed."
+
+    socketio.emit('job_update', JOBS[job_id])
+
 
 # --- Routes ---
 
 @app.route('/')
-def index(): return render_template('index.html')
+def index():
+    return render_template('index.html')
 
-@app.route('/api/status')
-def system_status():
-    """Returns disk usage and worker status."""
-    return jsonify(get_disk_usage())
-
-@app.route('/api/config', methods=['GET', 'POST'])
-def handle_config():
-    if request.method == 'POST':
-        db.save_config(request.json)
-        manager.reload_workers()
-        return jsonify({"status": "success"})
-    return jsonify(db.get_config())
-
-@app.route('/api/jobs', methods=['GET', 'POST'])
-def handle_jobs():
-    if request.method == 'GET': return jsonify(db.get_jobs())
+@app.route('/api/jobs', methods=['POST'])
+def create_job():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
     
-    if 'file' not in request.files: return jsonify({"error": "No file uploaded"}), 400
     file = request.files['file']
     content = file.read().decode('utf-8', errors='ignore')
     urls = [line.strip() for line in content.splitlines() if line.strip() and not line.startswith('#')]
     
-    if not urls: return jsonify({"error": "File contains no valid URLs"}), 400
+    if not urls:
+        return jsonify({"error": "No valid URLs found"}), 400
 
     job_id = str(uuid.uuid4())
-    db.create_job(job_id, file.filename, urls)
-    manager.submit_job(job_id, urls)
     
-    new_job = db.get_job(job_id)
-    socketio.emit('new_job', new_job)
-    return jsonify({"status": "success", "job": new_job})
+    # Parse options from form data
+    options = {
+        'force_gallery': request.form.get('force_gallery') == 'true'
+    }
 
-@app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
-def cancel_job(job_id):
-    db.update_job(job_id, {"status": "cancelled", "progress_text": "Cancelling..."})
-    socketio.emit('job_update', db.get_job(job_id))
-    return jsonify({"status": "success"})
-
-@app.route('/api/jobs/<job_id>', methods=['DELETE'])
-def delete_job(job_id):
-    db.delete_job(job_id)
-    socketio.emit('job_deleted', {'job_id': job_id})
-    return jsonify({"status": "success"})
-
-@app.route('/api/downloads')
-def list_downloads():
-    files = []
-    # Optimized walker with extension filtering
-    valid_exts = {'.mp4', '.mp3', '.mkv', '.webm', '.jpg', '.webp'}
+    JOBS[job_id] = {
+        'id': job_id,
+        'status': 'queued',
+        'progress': 0,
+        'progress_text': 'Queued',
+        'created_at': time.time(),
+        'filename': file.filename,
+        'url_count': len(urls),
+        'errors': []
+    }
     
-    for root, _, filenames in os.walk(DOWNLOAD_DIR):
-        for f in filenames:
-            name, ext = os.path.splitext(f)
-            if ext.lower() in valid_exts:
-                full_path = os.path.join(root, f)
-                try:
-                    stat = os.stat(full_path)
-                    files.append({
-                        "path": os.path.relpath(full_path, DOWNLOAD_DIR),
-                        "name": f,
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime, # This will now reflect Upload Date thanks to yt-dlp config
-                        "folder": os.path.basename(root)
-                    })
-                except OSError: pass # File might vanish during walk
-                
-    return jsonify(sorted(files, key=lambda x: x['modified'], reverse=True))
+    executor.submit(process_job, job_id, urls, options)
+    
+    socketio.emit('new_job', JOBS[job_id])
+    return jsonify(JOBS[job_id])
 
-@app.route('/api/download_all')
-def download_all_zip():
-    def generate():
-        temp_handle, temp_path = tempfile.mkstemp(suffix='.zip')
-        os.close(temp_handle)
-        try:
-            with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, _, files in os.walk(DOWNLOAD_DIR):
-                    for file in files:
-                        if not file.startswith('.'):
-                            abs_path = os.path.join(root, file)
-                            rel_path = os.path.relpath(abs_path, DOWNLOAD_DIR)
-                            zf.write(abs_path, rel_path)
-            
-            with open(temp_path, 'rb') as f:
-                while True:
-                    chunk = f.read(65536)
-                    if not chunk: break
-                    yield chunk
-        finally:
-            if os.path.exists(temp_path): os.remove(temp_path)
+@app.route('/api/jobs/<job_id>', methods=['GET'])
+def get_job(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
 
-    return Response(generate(), mimetype='application/zip', 
-                   headers={'Content-Disposition': f'attachment; filename=ytbatch_archive_{int(time.time())}.zip'})
+@app.route('/api/jobs/<job_id>/download', methods=['GET'])
+def download_job_zip(job_id):
+    job = JOBS.get(job_id)
+    if not job or job['status'] != 'completed' or 'zip_path' not in job:
+        return jsonify({"error": "File not ready or job failed"}), 404
+    
+    return send_file(
+        job['zip_path'],
+        as_attachment=True,
+        download_name=f"ytbatch_{job['filename']}_{job_id[:8]}.zip"
+    )
+
+@app.route('/api/jobs', methods=['GET'])
+def list_jobs():
+    # Return list of jobs sorted by time
+    jobs_list = sorted(JOBS.values(), key=lambda x: x['created_at'], reverse=True)
+    return jsonify(jobs_list)
+
+@app.route('/api/status')
+def status():
+    # Simple health check
+    return jsonify({"status": "ok", "active_jobs": len([j for j in JOBS.values() if j['status'] == 'running'])})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8899))
-    print(f"Starting YTBatch Pro on http://localhost:{port}")
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    print(f"Starting YTBatch Pro (Ephemeral) on port {port}")
+    socketio.run(app, host='0.0.0.0', port=port)

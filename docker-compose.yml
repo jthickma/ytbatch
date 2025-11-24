@@ -10,6 +10,8 @@ services:
     environment:
       - SECRET_KEY=change_me_to_a_secure_key 
       - PORT=8899
+      - MAX_WORKERS=4
+      - TEMP_DIR=/app/temp_data
     # Optional healthcheck
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8899/api/status"]

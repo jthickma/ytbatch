@@ -38,8 +38,7 @@
             </div>
             <div class="flex gap-4 text-sm font-medium">
                 <button @click="activeTab = 'dashboard'" :class="activeTab==='dashboard' ? 'text-blue-400' : 'text-gray-400 hover:text-white transition'">Dashboard</button>
-                <button @click="activeTab = 'files'; fetchFiles()" :class="activeTab==='files' ? 'text-blue-400' : 'text-gray-400 hover:text-white transition'">Library</button>
-                <button @click="showSettings = true" class="text-gray-400 hover:text-white transition">Settings</button>
+                <!-- <button @click="showSettings = true" class="text-gray-400 hover:text-white transition">Settings</button> -->
             </div>
         </div>
     </nav>
@@ -57,6 +56,13 @@
                     <div class="text-lg font-medium text-gray-200">Drop URL list (.txt)</div>
                     <div class="text-sm text-gray-500 mt-1">TikTok, YouTube, Instagram supported</div>
                 </div>
+            </div>
+
+            <div class="flex items-center justify-center gap-3">
+                <label class="flex items-center gap-2 cursor-pointer group">
+                    <input type="checkbox" x-model="forceGallery" class="w-4 h-4 text-blue-600 rounded bg-gray-700 border-gray-600 focus:ring-offset-gray-800">
+                    <span class="text-sm text-gray-400 group-hover:text-gray-300 transition">Force Gallery Mode (gallery-dl only)</span>
+                </label>
             </div>
 
             <div x-show="activeDownload.filename" x-transition.opacity class="bg-gray-800 border border-blue-500/30 rounded-xl p-5 shadow-lg relative overflow-hidden">
@@ -87,10 +93,14 @@
                                 </div>
                             </div>
                             <div class="flex gap-2">
+                                <a x-show="job.status === 'completed'" :href="`/api/jobs/${job.id}/download`" class="px-3 py-1 text-xs font-medium text-green-400 bg-green-400/10 hover:bg-green-400/20 rounded transition flex items-center gap-1">
+                                    <span>Download ZIP</span>
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                </a>
                                 <button x-show="['queued','running'].includes(job.status)" @click="cancelJob(job.id)" class="px-3 py-1 text-xs font-medium text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded transition">Stop</button>
-                                <button @click="deleteJob(job.id)" class="p-1.5 text-gray-500 hover:text-white rounded transition">
+                                <!-- <button @click="deleteJob(job.id)" class="p-1.5 text-gray-500 hover:text-white rounded transition">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                </button>
+                                </button> -->
                             </div>
                         </div>
                         
@@ -109,43 +119,7 @@
             </div>
         </div>
 
-        <div x-show="activeTab === 'files'" class="space-y-4" x-cloak>
-            <div class="flex flex-col md:flex-row justify-between items-center gap-4">
-                <div class="flex items-center gap-4 w-full md:w-auto">
-                    <h2 class="text-xl font-bold">Library</h2>
-                    <span class="text-xs px-2 py-1 bg-gray-800 rounded border border-gray-700 text-gray-400" x-text="sysStats.free + ' free'"></span>
-                </div>
-                
-                <div class="flex gap-2 w-full md:w-auto">
-                    <input type="text" x-model="searchQuery" placeholder="Search files..." class="bg-gray-800 border border-gray-700 text-sm rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500 w-full md:w-48">
-                    <a href="/api/download_all" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded shadow whitespace-nowrap transition">Download All (ZIP)</a>
-                    <button @click="fetchFiles()" class="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded border border-gray-700 transition">↻</button>
-                </div>
-            </div>
-
-            <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-                <table class="w-full text-left text-sm text-gray-400">
-                    <thead class="bg-gray-750 text-gray-200 uppercase font-medium border-b border-gray-700 text-xs">
-                        <tr><th class="px-6 py-3">File Name</th><th class="px-6 py-3">Size</th><th class="px-6 py-3">Upload Date (Modified)</th></tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-700">
-                        <template x-for="file in filteredFiles" :key="file.path">
-                            <tr class="hover:bg-gray-700/50 transition group">
-                                <td class="px-6 py-3">
-                                    <div class="flex flex-col">
-                                        <span class="text-gray-200 font-medium truncate max-w-md" x-text="file.name"></span>
-                                        <span class="text-xs text-gray-500" x-text="file.folder"></span>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-3 font-mono text-xs" x-text="formatBytes(file.size)"></td>
-                                <td class="px-6 py-3 text-xs" x-text="formatDate(file.modified)"></td>
-                            </tr>
-                        </template>
-                        <tr x-show="filteredFiles.length === 0"><td colspan="3" class="px-6 py-8 text-center text-gray-500">No files found.</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <!-- Library removed for ephemeral version -->
     </main>
 
     <div x-show="showSettings" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" x-cloak>
@@ -189,21 +163,16 @@
                 files: [],
                 searchQuery: '',
                 config: {},
+                forceGallery: false,
                 activeDownload: { filename: '', percent: 0, speed: '', eta: '' },
                 sysStats: { free: 'Checking...', percent: 0 },
                 toasts: [],
                 socket: null,
                 timeout: null,
 
-                get filteredFiles() {
-                    if(!this.searchQuery) return this.files;
-                    const q = this.searchQuery.toLowerCase();
-                    return this.files.filter(f => f.name.toLowerCase().includes(q) || f.folder.toLowerCase().includes(q));
-                },
-
                 initApp() {
                     this.fetchJobs();
-                    this.fetchConfig();
+                    // this.fetchConfig();
                     this.fetchSysStats();
                     
                     this.socket = io();
@@ -211,15 +180,13 @@
                     this.socket.on('job_update', u => {
                         const i = this.jobs.findIndex(j => j.id === u.id);
                         if (i !== -1) {
-                            // If job just completed, refresh files
                             if (this.jobs[i].status !== 'completed' && u.status === 'completed') {
-                                this.fetchFiles(); 
                                 this.showToast('Download job completed', 'success');
                             }
                             this.jobs[i] = u;
                         } else this.jobs.unshift(u);
                     });
-                    this.socket.on('job_deleted', d => this.jobs = this.jobs.filter(j => j.id !== d.job_id));
+                    // this.socket.on('job_deleted', d => this.jobs = this.jobs.filter(j => j.id !== d.job_id));
                     this.socket.on('file_progress', d => {
                         this.activeDownload = d;
                         clearTimeout(this.timeout);
@@ -235,22 +202,24 @@
 
                 async fetchSysStats() { this.sysStats = await (await fetch('/api/status')).json(); },
                 async fetchJobs() { this.jobs = await (await fetch('/api/jobs')).json(); },
-                async fetchConfig() { this.config = await (await fetch('/api/config')).json(); },
-                async saveConfig() {
-                    await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.config) });
-                    this.showSettings = false;
-                    this.showToast('Settings saved', 'success');
-                },
-                async fetchFiles() { 
-                    this.files = await (await fetch('/api/downloads')).json(); 
-                    this.fetchSysStats();
-                },
+                // async fetchConfig() { this.config = await (await fetch('/api/config')).json(); },
+                // async saveConfig() {
+                //     await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.config) });
+                //     this.showSettings = false;
+                //     this.showToast('Settings saved', 'success');
+                // },
+                // async fetchFiles() { 
+                //     this.files = await (await fetch('/api/downloads')).json(); 
+                //     this.fetchSysStats();
+                // },
                 
                 async handleDrop(e) { this.dragover = false; if(e.dataTransfer.files[0]) this.upload(e.dataTransfer.files[0]); },
                 async handleFileSelect(e) { if(e.target.files[0]) this.upload(e.target.files[0]); },
                 
                 async upload(file) {
-                    const fd = new FormData(); fd.append('file', file);
+                    const fd = new FormData(); 
+                    fd.append('file', file);
+                    fd.append('force_gallery', this.forceGallery);
                     try {
                         const res = await fetch('/api/jobs', { method: 'POST', body: fd });
                         if(!res.ok) throw new Error((await res.json()).error);

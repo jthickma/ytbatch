@@ -30,4 +30,5 @@ USER appuser
 EXPOSE 8899
 
 # Start with Gunicorn + Eventlet
-CMD ["gunicorn", "--worker-class", "eventlet", "-w", "1", "--bind", "0.0.0.0:8899", "app:app"]
+# We use shell form here to allow variable expansion of $PORT
+CMD gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT app:app
